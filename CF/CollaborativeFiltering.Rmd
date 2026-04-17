@@ -4,22 +4,22 @@ output: html_notebook
 ---
 
 ```{r}
-# library
-
+library(Metrics)
+library(ggplot2)
 ```
 
 ```{r}
-df <- read.csv('cleanedcf.csv', row.names = 'airport')
-
+df_na <- read.csv('cleanedcf.csv', row.names = 'airport')
+df_filled <- read.csv('filledcf.csv', row.names = 'airport')
 ```
 
 ```{r}
-user_cf <- function(airport, k) {
+user_cf <- function(df, k) {
   # center data
   rm <- rowMeans(df, na.rm = T)
-  df_centered <- df
-  df_centered[is.na(df_centered)] <- rm[row(df_centered)][is.na(df_centered)]
-  df_centered <- df_centered - rm
+  #df_centered <- df
+  #df_centered[is.na(df_centered)] <- rm[row(df_centered)][is.na(df_centered)]
+  df_centered <- df_filled - rm
   
   # create empty similarity matrix
   sim_mat <- as.data.frame(matrix(0, nrow = nrow(df), ncol = nrow(df)))
@@ -44,7 +44,7 @@ user_cf <- function(airport, k) {
   sim_mat <- sim_mat[rowSums(!is.na(sim_mat)) > 0, ]
   sim_mat <- sim_mat[, colSums(!is.na(sim_mat)) > 0]
   
-    # Min-Max scale similarity scores
+  # Min-Max scale similarity scores
   sim_mat[row(sim_mat) == col(sim_mat)] <- NA
   
   scale <- function(x) {
@@ -57,13 +57,19 @@ user_cf <- function(airport, k) {
   
   sim_scores_scaled <- as.data.frame(t(apply(sim_mat, 1, scale)))
 
-  # find missing columns for target airport, weights for k most similar airports, and most similar airports
-  if (!(airport %in% rownames(sim_scores_scaled))) {
-    stop ('Process terminated:', airport, 'not predictable')
-  } else {
+  preds <- as.data.frame(matrix(NA, nrow = nrow(sim_scores_scaled), ncol = ncol(df_na)))
+  colnames(preds) <- colnames(df_na)
+  rownames(preds) <- rownames(sim_scores_scaled)
+  
+  for (airport in rownames(sim_scores_scaled)) {
+    # find missing columns for target airport, weights for k most similar airports, and most similar airports
     missing_carrier <- df[airport, sapply(df, anyNA)]
-    pred_weight <- order(sim_scores_scaled[airport, ], decreasing = T)[1:k]
-    pred_sim_airport <- t(apply(sim_scores_scaled[airport, ], 1, function(x) names(sim_scores_scaled)[order(x, decreasing = T)][1:k]))
+    
+    airport_sim_scores <- as.numeric(sim_scores_scaled[airport, ])
+    names(airport_sim_scores) <- rownames(sim_scores_scaled)
+    
+    pred_weight <- sort(airport_sim_scores, decreasing = T)[1:k]
+    sim_airport <- names(sort(airport_sim_scores, decreasing = T))[1:k]
     
     airport_pred <- df[airport, ]
   
@@ -71,9 +77,9 @@ user_cf <- function(airport, k) {
       pred_delay <- NULL
       
       # find delay for the missing carrier and most similar airports (if carrier is also missing for most similar airport, use similar airport delay mean)
-      for (sim in pred_sim_airport[airport, 1:k]) {
+      for (sim in sim_airport) {
         if (is.na(df[sim, col])) {
-          pred_delay <- c(pred_delay, mean(df[sim, ], na.rm = T))
+          pred_delay <- c(pred_delay, mean(as.numeric(df[sim, ]), na.rm = T))
         } else {
           pred_delay <- c(pred_delay, as.numeric(df[sim, col]))
         }
@@ -86,13 +92,131 @@ user_cf <- function(airport, k) {
       airport_pred[1, col] <- col_pred
     }
   
-    return(airport_pred)
-    }
-  
+    preds[airport, ] <- airport_pred
+  }
+  return(preds)
 }
 
 ```
 
 ```{r}
-ABE_pred = user_cf(airport='ABE', k=3)
+preds <- user_cf(df=df_na, k=3)
 ```
+
+```{r}
+total_cf <- function(df, k) {
+  # center data
+  rm <- rowMeans(df, na.rm = T)
+  df_centered <- df_filled - rm
+  
+  # create empty similarity matrix
+  sim_mat <- as.data.frame(matrix(0, nrow = nrow(df), ncol = nrow(df)))
+  rownames(sim_mat) <- rownames(df)
+  colnames(sim_mat) <- rownames(df)
+
+  # fill similarity matrix
+  for (r_airport in rownames(sim_mat)) {
+    for (c_airport in colnames(sim_mat)) {
+      x <- as.matrix(df_centered[r_airport, ])
+      y <- as.matrix(df_centered[c_airport, ])
+      
+      num <- sum(x * y)
+      den <- sqrt(sum(x * x)) * sqrt(sum(y * y))
+      cosine_sim <- ifelse(den == 0, NA, num / den)
+      
+      sim_mat[r_airport, c_airport] <- cosine_sim
+    }
+  }
+  
+  # remove rows and columns in sim_mat that are completely NA
+  sim_mat <- sim_mat[rowSums(!is.na(sim_mat)) > 0, ]
+  sim_mat <- sim_mat[, colSums(!is.na(sim_mat)) > 0]
+  
+  # Min-Max scale similarity scores
+  sim_mat[row(sim_mat) == col(sim_mat)] <- NA
+  
+  scale <- function(x) {
+    if (min(x, na.rm = T) == max(x, na.rm = T)) {
+      return(rep(0.5, length(x)))
+    } else {
+      return ((x - min(x, na.rm = T))/(max(x, na.rm = T) - min(x, na.rm = T)))
+    }
+  }
+  
+  sim_scores_scaled <- as.data.frame(t(apply(sim_mat, 1, scale)))
+
+  preds <- as.data.frame(matrix(NA, nrow = nrow(sim_scores_scaled), ncol = ncol(df_na)))
+  colnames(preds) <- colnames(df_na)
+  rownames(preds) <- rownames(sim_scores_scaled)
+  
+  for (airport in rownames(sim_scores_scaled)) {
+    
+    airport_sim_scores <- as.numeric(sim_scores_scaled[airport, ])
+    names(airport_sim_scores) <- rownames(sim_scores_scaled)
+    
+    pred_weight <- sort(airport_sim_scores, decreasing = T)[1:k]
+    sim_airport <- names(sort(airport_sim_scores, decreasing = T))[1:k]
+    
+    airport_pred <- df[airport, ]
+  
+    for (col in colnames(df)) {
+      pred_delay <- NULL
+      
+      # find delay for the missing carrier and most similar airports (if carrier is also missing for most similar airport, use similar airport delay mean)
+      for (sim in sim_airport) {
+        if (is.na(df[sim, col])) {
+          pred_delay <- c(pred_delay, mean(as.numeric(df[sim, ]), na.rm = T))
+        } else {
+          pred_delay <- c(pred_delay, as.numeric(df[sim, col]))
+        }
+      }
+      
+      # calculate predicted delay
+      pred_weight <- as.numeric(pred_weight)
+      
+      col_pred <- sum(pred_delay * pred_weight) / sum(pred_weight) 
+      airport_pred[1, col] <- col_pred
+    }
+  
+    preds[airport, ] <- airport_pred
+  }
+  return(preds)
+}
+
+```
+
+```{r}
+df_pred <- total_cf(df=df_na, k=3)
+
+```
+
+```{r}
+
+df_new_na <- df_na[rownames(df_pred), colnames(df_pred)]
+
+not_na <- !is.na(df_new_na)
+
+actual <- c(df_new_na[not_na])
+predicted <- c(df_pred[not_na])
+
+# Root Mean Squared Error
+rmse_val <- rmse(actual, predicted)
+# Mean Absolute Error
+mae_val <- mae(as.numeric(actual), as.numeric(predicted))
+# Mean Absolute Percentage Error
+mape_val <- mape(as.numeric(actual), as.numeric(predicted))
+```
+
+```{r}
+plot_data <- data.frame(Actual = actual, Predicted = predicted )
+ggplot(plot_data, aes(x = Actual, y = Predicted)) +
+  geom_point() +
+  geom_smooth(method = "lm", formula = y ~ x, color = "red") +
+  labs(
+    x = "Actual Delay", 
+    y = "Predicted Delay", 
+    title = "Actual vs. Predicted Delay"
+    ) +
+  theme_minimal()
+```
+
